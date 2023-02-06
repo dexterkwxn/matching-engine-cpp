@@ -1,9 +1,6 @@
 // This file contains main() as well as the logic setting up the I/O.
 // There should be no need to modify this file.
 
-#define _POSIX_C_SOURCE 200809L
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <signal.h>
 #include <stddef.h>
@@ -52,7 +49,8 @@ int main(int argc, char* argv[])
 	}
 
 	{
-		struct sockaddr_un sockaddr = { .sun_family = AF_UNIX };
+		struct sockaddr_un sockaddr {};
+		sockaddr.sun_family = AF_UNIX;
 		strncpy(sockaddr.sun_path, argv[1], sizeof(sockaddr.sun_path) - 1);
 		if(bind(listenfd, (const struct sockaddr*) &sockaddr, sizeof(sockaddr)) != 0)
 		{

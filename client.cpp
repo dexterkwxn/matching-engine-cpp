@@ -1,6 +1,3 @@
-#define _GNU_SOURCE
-#define _POSIX_C_SOURCE 200809L
-
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -27,10 +24,9 @@ static std::atomic<bool> main_is_exiting = 0;
 
 static void* poll_thread(void* fdptr)
 {
-	struct pollfd pfd = {
-		.fd = (int) (long) fdptr,
-		.events = 0,
-	};
+	struct pollfd pfd {};
+	pfd.fd = (int) (long) fdptr;
+	pfd.events = 0;
 
 	while(!main_is_exiting)
 	{
@@ -68,7 +64,8 @@ int main(int argc, char* argv[])
 	}
 
 	{
-		struct sockaddr_un sockaddr = { .sun_family = AF_UNIX };
+		struct sockaddr_un sockaddr {};
+		sockaddr.sun_family = AF_UNIX;
 		strncpy(sockaddr.sun_path, argv[1], sizeof(sockaddr.sun_path) - 1);
 		if(connect(clientfd, (const struct sockaddr*) &sockaddr, sizeof(sockaddr)) != 0)
 		{

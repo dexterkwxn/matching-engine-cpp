@@ -14,7 +14,7 @@ engine: $(SRCS:%=$(BUILDDIR)/%.o)
 	$(LINK.cc) $^ $(LOADLIBES) $(LDLIBS) -o $@
 
 client: $(BUILDDIR)/client.cpp.o
-	$(LINK.c) $^ $(LOADLIBES) $(LDLIBS) -o $@
+	$(LINK.cc) $^ $(LOADLIBES) $(LDLIBS) -o $@
 
 .PHONY: clean
 clean:
