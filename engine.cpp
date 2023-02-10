@@ -1,8 +1,29 @@
 #include <iostream>
 #include <thread>
+#include <queue>
+#include <unordered_map>
 
 #include "io.hpp"
 #include "engine.hpp"
+
+struct Order {
+  std::string order_type;
+  size_t qty;
+  size_t price;
+};
+
+struct Instrument {
+  std::string instrument_name;
+  std::priority_queue<Order> buy_queue;
+  std::priority_queue<Order> sell_queue;
+
+  void match(Order order) {
+  }
+};
+
+struct OrderBook {
+  std::unordered_map<std::string, Instrument> instruments;
+};
 
 void Engine::accept(ClientConnection connection)
 {
