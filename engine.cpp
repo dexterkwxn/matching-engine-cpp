@@ -1,16 +1,18 @@
 #include <iostream>
+#include <algorithm>
 #include <thread>
 #include <queue>
 #include <unordered_map>
 #include <mutex>
+#include <string>
 
 #include "io.hpp"
 #include "engine.hpp"
 
 struct Order {
-  std::string order_type;
-  size_t qty;
+  size_t order_id;
   size_t price;
+  size_t count;
 };
 
 struct Instrument {
@@ -39,6 +41,30 @@ public:
   void ProcessBuyOrder(uint32_t order_id, uint32_t price, uint32_t count) {
     std::lock_guard guard(instrument_mutex);
 
+    Order buy_order = Order{order_id, price, count};
+
+    while (buy_order.count) {
+      if (sell_queue.empty()) {
+        buy_queue.push(buy_order);
+        break;
+      }
+      Order sell_order = sell_queue.top();
+      sell_queue.pop();
+
+      // matchy match im lazy to write this for now
+      // okay now we have our sell_order
+
+      size_t count = std::min(buy_order.count, sell_order.count);
+      buy_order.count -= count;
+      sell_order.count -= count;
+
+      // placeholder printing
+      std::cout << "YO WE BOUGHT " << count << " OF " << instrument_name << " AT " << std::to_string(sell_order.price) << "\n";
+
+      if (sell_order.count) {
+        sell_queue.push(sell_order);
+      }
+    }
   }
 
 };
