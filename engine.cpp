@@ -76,7 +76,7 @@ public:
       sell_order.count -= count;
 
       // placeholder printing
-      std::cout << "YO WE BOUGHT " << count << " OF " << instrument_name
+      std::cerr << "YO WE BOUGHT " << count << " OF " << instrument_name
                 << " AT " << std::to_string(sell_order.price) << "\n";
 
       if (sell_order.count) {
@@ -113,7 +113,7 @@ public:
       sell_order.count -= count;
 
       // placeholder printing
-      std::cout << "YO WE SOLD " << count << " OF " << instrument_name << " AT "
+      std::cerr << "YO WE SOLD " << count << " OF " << instrument_name << " AT "
                 << std::to_string(buy_order.price) << "\n";
 
       if (buy_order.count) {
