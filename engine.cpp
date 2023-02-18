@@ -10,10 +10,21 @@
 #include "engine.hpp"
 #include "io.hpp"
 
+void _debug() { std::cout << '\n'; }
+template <typename Head, typename... Tail> void _debug(Head H, Tail... T) {
+  std::cout << ' ' << H;
+  _debug(T...);
+}
+template <typename Head, typename... Tail> void debug(Head H, Tail... T) {
+  std::cout << H;
+  _debug(T...);
+}
+
 struct Order {
   size_t order_id;
   size_t price;
   size_t count;
+  size_t execution_id;
   std::chrono::microseconds::rep timestamp; // is this the right type?
 
   bool operator<(const Order &o) const {
@@ -49,35 +60,40 @@ public:
   Instrument(std::string instrument_name_)
       : instrument_name(instrument_name_) {}
 
-  void ProcessBuyOrder(uint32_t order_id, uint32_t price, uint32_t count,
+  void ProcessBuyOrder(std::string_view instrument, uint32_t order_id,
+                       uint32_t price, uint32_t count,
                        std::chrono::microseconds::rep input_time) {
     std::lock_guard guard(instrument_mutex);
 
-    Order buy_order = Order{order_id, price, count, input_time};
+    Order buy_order = Order{order_id, price, count, 1, input_time};
 
     while (buy_order.count) {
       if (sell_orders.empty()) {
         buy_orders.insert(buy_order);
+        auto output_time = getCurrentTimestamp();
+        Output::OrderAdded(order_id, instrument.data(), price, buy_order.count,
+                           false, output_time);
         break;
       }
 
       // matchy match im lazy to write this for now
       // okay now we have our sell_order
-      auto ub = sell_orders.upper_bound(buy_order);
-      if (ub == sell_orders.begin()) {
+      auto it = sell_orders.begin();
+      auto sell_order = *it;
+      if (sell_order.price > price) {
         buy_orders.insert(buy_order);
         break;
       }
-      Order sell_order = *prev(ub); // works depending on comparator<
-      sell_orders.erase(sell_order);
+      sell_orders.erase(it);
 
       size_t count = std::min(buy_order.count, sell_order.count);
       buy_order.count -= count;
       sell_order.count -= count;
 
-      // placeholder printing
-      std::cerr << "YO WE BOUGHT " << count << " OF " << instrument_name
-                << " AT " << std::to_string(sell_order.price) << "\n";
+      auto output_time = getCurrentTimestamp();
+      Output::OrderExecuted(sell_order.order_id, order_id,
+                            sell_order.execution_id, sell_order.price, count,
+                            output_time);
 
       if (sell_order.count) {
         sell_orders.insert(sell_order);
@@ -85,15 +101,19 @@ public:
     }
   }
 
-  void ProcessSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
+  void ProcessSellOrder(std::string_view instrument, uint32_t order_id,
+                        uint32_t price, uint32_t count,
                         std::chrono::microseconds::rep input_time) {
     std::lock_guard guard(instrument_mutex);
 
-    Order sell_order = Order{order_id, price, count, input_time};
+    Order sell_order = Order{order_id, price, count, 1, input_time};
 
     while (sell_order.count) {
       if (buy_orders.empty()) {
         sell_orders.insert(sell_order);
+        auto output_time = getCurrentTimestamp();
+        Output::OrderAdded(order_id, instrument.data(), price, sell_order.count,
+                           true, output_time);
         break;
       }
 
@@ -112,9 +132,10 @@ public:
       buy_order.count -= count;
       sell_order.count -= count;
 
-      // placeholder printing
-      std::cerr << "YO WE SOLD " << count << " OF " << instrument_name << " AT "
-                << std::to_string(buy_order.price) << "\n";
+      auto output_time = getCurrentTimestamp();
+      Output::OrderExecuted(buy_order.order_id, order_id,
+                            buy_order.execution_id, buy_order.price, count,
+                            output_time);
 
       if (buy_order.count) {
         buy_orders.insert(buy_order);
@@ -129,28 +150,30 @@ struct OrderBook {
 
   OrderBook() : instruments(), mutex() {}
 
-  void InstrumentExists(std::string instrument) {
-    std::lock_guard guard(mutex);
-    if (instruments.contains(instrument)) {
-      return;
+  Instrument &EnsureInstrumentExists(std::string_view _name) {
+    std::string name{_name};
+    std::lock_guard guard{mutex};
+    if (instruments.contains(name)) {
+      return instruments[name];
     } else {
-      instruments[instrument] = Instrument(instrument);
+      return instruments[name] = Instrument{name};
     }
   }
 
   void ProcessBuyOrder(uint32_t order_id, uint32_t price, uint32_t count,
-                       std::string instrument,
+                       std::string_view instrument_name,
                        std::chrono::microseconds::rep input_time) {
-    InstrumentExists(instrument);
-    instruments[instrument].ProcessBuyOrder(order_id, price, count, input_time);
+    auto &instrument = EnsureInstrumentExists(instrument_name);
+    instrument.ProcessBuyOrder(instrument_name, order_id, price, count,
+                               input_time);
   }
 
   void ProcessSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
-                        std::string instrument,
+                        std::string_view instrument_name,
                         std::chrono::microseconds::rep input_time) {
-    InstrumentExists(instrument);
-    instruments[instrument].ProcessSellOrder(order_id, price, count,
-                                             input_time);
+    auto &instrument = EnsureInstrumentExists(instrument_name);
+    instrument.ProcessSellOrder(instrument_name, order_id, price, count,
+                                input_time);
   }
 };
 
@@ -219,9 +242,11 @@ void Engine::connection_thread(ClientConnection connection) {
 
     // Remember to take timestamp at the appropriate time, or compute
     // an appropriate timestamp!
+    /*
     intmax_t output_time = getCurrentTimestamp();
 
     // Check the parameter names in `io.hpp`.
     Output::OrderExecuted(123, 124, 1, 2000, 10, output_time);
+    */
   }
 }
