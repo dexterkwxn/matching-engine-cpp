@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
@@ -10,53 +11,42 @@
 #include "engine.hpp"
 #include "io.hpp"
 
-void _debug() { std::cout << '\n'; }
+void _debug() { SyncCerr{} << '\n'; }
 template <typename Head, typename... Tail> void _debug(Head H, Tail... T) {
-  std::cout << ' ' << H;
+  SyncCerr{} << ' ' << H;
   _debug(T...);
 }
 template <typename Head, typename... Tail> void debug(Head H, Tail... T) {
-  std::cout << H;
+  SyncCerr{} << H;
   _debug(T...);
 }
 
 struct Order {
-  size_t order_id;
-  size_t price;
-  size_t count;
-  size_t execution_id;
+  uint32_t order_id;
+  uint32_t price;
+  uint32_t count;
+  uint32_t execution_id;
   std::chrono::microseconds::rep timestamp; // is this the right type?
 
   bool operator<(const Order &o) const {
-    if (this->price != o.price) {
-      return this->price < o.price;
-    } else {
-      return this->timestamp < o.timestamp;
+    if (price != o.price) {
+      return price < o.price;
     }
+    if (timestamp != o.timestamp) {
+      return timestamp < o.timestamp;
+    }
+    return order_id < o.order_id;
   }
 };
 
 struct Instrument {
 private:
   std::string instrument_name;
-  std::multiset<Order> buy_orders;
-  std::multiset<Order> sell_orders;
+  std::set<Order> buy_orders;
+  std::set<Order> sell_orders;
   std::mutex instrument_mutex;
 
 public:
-  Instrument() {}
-  Instrument(const Instrument &instrument_) { // copy constructor
-    buy_orders = instrument_.buy_orders;
-    sell_orders = instrument_.sell_orders;
-    instrument_name = instrument_.instrument_name;
-  }
-  Instrument &operator=(const Instrument &instrument_) { // move constructor
-    buy_orders = instrument_.buy_orders;
-    sell_orders = instrument_.sell_orders;
-    instrument_name = instrument_.instrument_name;
-    return *this;
-  }
-
   Instrument(std::string instrument_name_)
       : instrument_name(instrument_name_) {}
 
@@ -145,7 +135,8 @@ public:
 };
 
 struct OrderBook {
-  std::unordered_map<std::string, Instrument> instruments;
+  std::unordered_map<std::string, std::unique_ptr<Instrument>> instruments;
+  std::unordered_map<uint32_t, std::string> orders;
   std::mutex mutex;
 
   OrderBook() : instruments(), mutex() {}
@@ -153,10 +144,20 @@ struct OrderBook {
   Instrument &EnsureInstrumentExists(std::string_view _name) {
     std::string name{_name};
     std::lock_guard guard{mutex};
-    if (instruments.contains(name)) {
-      return instruments[name];
-    } else {
-      return instruments[name] = Instrument{name};
+    auto &instrument = instruments[name];
+    if (!instrument) {
+      instrument = std::make_unique<Instrument>(name);
+    }
+    return *instrument;
+  }
+
+  void ProcessCancelOrder(uint32_t order_id) {
+    // TODO: implement cancellation of orders
+    auto it = orders.find(order_id);
+    if (it == orders.end()) {
+      auto output_time = getCurrentTimestamp();
+      Output::OrderDeleted(order_id, false, output_time);
+      return;
     }
   }
 
@@ -201,16 +202,17 @@ void Engine::connection_thread(ClientConnection connection) {
     // provided in the Output class:
     switch (input.type) {
     case input_cancel: {
-      SyncCerr{} << "Got cancel: ID: " << input.order_id << std::endl;
+      debug("Got cancel ID:", input.order_id);
 
-      // Remember to take timestamp at the appropriate time, or compute
-      // an appropriate timestamp!
-      auto output_time = getCurrentTimestamp();
-      Output::OrderDeleted(input.order_id, true, output_time);
+      order_book.ProcessCancelOrder(input.order_id);
       break;
     }
 
     case input_buy: {
+      debug("Got buy order ID:", input.order_id);
+
+      // Remember to take timestamp at the appropriate time, or compute
+      // an appropriate timestamp!
       auto input_time = getCurrentTimestamp();
       order_book.ProcessBuyOrder(input.order_id, input.price, input.count,
                                  input.instrument, input_time);
@@ -218,6 +220,8 @@ void Engine::connection_thread(ClientConnection connection) {
     }
 
     case input_sell: {
+      debug("Got sell order ID:", input.order_id);
+
       auto input_time = getCurrentTimestamp();
       order_book.ProcessSellOrder(input.order_id, input.price, input.count,
                                   input.instrument, input_time);
