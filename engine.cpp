@@ -58,7 +58,7 @@ private:
 
 public:
   void handleCancelOrder(auto &&p_orders, uint32_t order_id, auto input_time) {
-    //   std::lock_guard lock{mutex};
+    std::lock_guard lock{mutex};
 
     auto it = orders.find(order_id);
     buy_orders.erase(it->second);
@@ -71,7 +71,7 @@ public:
   void handleBuyOrder(auto &&p_orders, std::string_view instrument,
                       uint32_t order_id, uint32_t price, uint32_t count,
                       std::chrono::microseconds::rep input_time) {
-    //    std::lock_guard lock{mutex};
+    std::lock_guard lock{mutex};
 
     Order buy_order{order_id, price, count, 1, input_time};
 
@@ -114,7 +114,7 @@ public:
   void handleSellOrder(auto &&p_orders, std::string_view instrument,
                        uint32_t order_id, uint32_t price, uint32_t count,
                        std::chrono::microseconds::rep input_time) {
-    //   std::lock_guard lock{mutex};
+    std::lock_guard lock{mutex};
 
     Order sell_order{order_id, price, count, 1, input_time};
 
@@ -161,6 +161,7 @@ struct OrderBook {
   std::mutex mutex;
 
   Instrument &EnsureInstrumentExists(std::string_view name) {
+    std::lock_guard lock{mutex};
     auto &instrument = instruments[std::string{name}];
     if (!instrument) {
       instrument = std::make_unique<Instrument>();
@@ -169,7 +170,6 @@ struct OrderBook {
   }
 
   void processCancelOrder(uint32_t order_id) {
-    std::lock_guard lock{mutex};
     auto input_time = getCurrentTimestamp();
     auto it = orders.find(order_id);
     if (it == orders.end()) {
@@ -181,7 +181,6 @@ struct OrderBook {
 
   void processBuyOrder(uint32_t order_id, uint32_t price, uint32_t count,
                        std::string_view instrument_name) {
-    std::lock_guard lock{mutex};
     auto input_time = getCurrentTimestamp();
     auto &instrument = EnsureInstrumentExists(instrument_name);
     instrument.handleBuyOrder(orders, instrument_name, order_id, price, count,
@@ -190,7 +189,6 @@ struct OrderBook {
 
   void processSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
                         std::string_view instrument_name) {
-    std::lock_guard lock{mutex};
     auto input_time = getCurrentTimestamp();
     auto &instrument = EnsureInstrumentExists(instrument_name);
     instrument.handleSellOrder(orders, instrument_name, order_id, price, count,
