@@ -196,6 +196,8 @@ struct OrderBook {
   }
 };
 
+OrderBook order_book;
+
 void Engine::accept(ClientConnection connection) {
   auto thread =
       std::thread(&Engine::connection_thread, this, std::move(connection));
@@ -203,8 +205,6 @@ void Engine::accept(ClientConnection connection) {
 }
 
 void Engine::connection_thread(ClientConnection connection) {
-  OrderBook order_book;
-
   while (true) {
     ClientCommand input{};
     switch (connection.readInput(input)) {
