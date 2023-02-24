@@ -57,21 +57,25 @@ private:
   std::mutex mutex;
 
 public:
-  void handleCancelOrder(auto &&p_orders, uint32_t order_id,
-                         std::atomic<intmax_t> &timestamp) {
+  void handleCancelOrder(uint32_t order_id, std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
     auto it = orders.find(order_id);
+    if (it == orders.end()) {
+      Output::OrderDeleted(order_id, false, timestamp);
+      ++timestamp;
+      return;
+    }
     buy_orders.erase(it->second);
     sell_orders.erase(it->second);
     orders.erase(it);
-    p_orders.erase(order_id);
     Output::OrderDeleted(order_id, true, timestamp);
     ++timestamp;
   }
 
-  void handleBuyOrder(auto &&p_orders, std::string_view instrument,
-                      uint32_t order_id, uint32_t price, uint32_t count,
+  void handleBuyOrder(auto &&p_orders, std::mutex &p_orders_mtx,
+                      std::string_view instrument, uint32_t order_id,
+                      uint32_t price, uint32_t count,
                       std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
@@ -83,7 +87,6 @@ public:
       if (sell_order.price > price) {
         break;
       }
-      p_orders.erase(it->order_id);
       orders.erase(it->order_id);
       sell_orders.erase(it);
 
@@ -100,7 +103,10 @@ public:
       if (sell_order.count) {
         sell_orders.insert(sell_order);
         orders[sell_order.order_id] = sell_order;
-        p_orders[sell_order.order_id] = this;
+        {
+          std::lock_guard p_lock{p_orders_mtx};
+          p_orders[sell_order.order_id] = this;
+        }
       }
     }
 
@@ -108,7 +114,10 @@ public:
       buy_order.timestamp = timestamp;
       buy_orders.insert(buy_order);
       orders[buy_order.order_id] = buy_order;
-      p_orders[buy_order.order_id] = this;
+      {
+        std::lock_guard p_lock{p_orders_mtx};
+        p_orders[buy_order.order_id] = this;
+      }
 
       Output::OrderAdded(order_id, instrument.data(), price, buy_order.count,
                          false, timestamp);
@@ -116,8 +125,9 @@ public:
     }
   }
 
-  void handleSellOrder(auto &&p_orders, std::string_view instrument,
-                       uint32_t order_id, uint32_t price, uint32_t count,
+  void handleSellOrder(auto &&p_orders, std::mutex &p_orders_mtx,
+                       std::string_view instrument, uint32_t order_id,
+                       uint32_t price, uint32_t count,
                        std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
@@ -129,7 +139,6 @@ public:
       if (buy_order.price < price) {
         break;
       }
-      p_orders.erase(it->order_id);
       orders.erase(it->order_id);
       buy_orders.erase(it);
 
@@ -146,7 +155,10 @@ public:
       if (buy_order.count) {
         buy_orders.insert(buy_order);
         orders[buy_order.order_id] = buy_order;
-        p_orders[buy_order.order_id] = this;
+        {
+          std::lock_guard p_lock{p_orders_mtx};
+          p_orders[buy_order.order_id] = this;
+        }
       }
     }
 
@@ -154,7 +166,10 @@ public:
       sell_order.timestamp = timestamp;
       sell_orders.insert(sell_order);
       orders[sell_order.order_id] = sell_order;
-      p_orders[sell_order.order_id] = this;
+      {
+        std::lock_guard p_lock{p_orders_mtx};
+        p_orders[sell_order.order_id] = this;
+      }
 
       Output::OrderAdded(order_id, instrument.data(), price, sell_order.count,
                          true, timestamp);
@@ -180,30 +195,31 @@ struct OrderBook {
   }
 
   void processCancelOrder(uint32_t order_id) {
-    std::lock_guard lock{orders_mtx};
-    auto it = orders.find(order_id);
-    if (it == orders.end()) {
-      Output::OrderDeleted(order_id, false, timestamp);
-      ++timestamp;
-      return;
+    decltype(orders)::iterator it;
+    {
+      std::lock_guard lock{orders_mtx};
+      it = orders.find(order_id);
+      if (it == orders.end()) {
+        Output::OrderDeleted(order_id, false, timestamp);
+        ++timestamp;
+        return;
+      }
     }
-    it->second->handleCancelOrder(orders, order_id, timestamp);
+    it->second->handleCancelOrder(order_id, timestamp);
   }
 
   void processBuyOrder(uint32_t order_id, uint32_t price, uint32_t count,
                        std::string_view instrument_name) {
     auto &instrument = EnsureInstrumentExists(instrument_name);
-    std::lock_guard lock{orders_mtx};
-    instrument.handleBuyOrder(orders, instrument_name, order_id, price, count,
-                              timestamp);
+    instrument.handleBuyOrder(orders, orders_mtx, instrument_name, order_id,
+                              price, count, timestamp);
   }
 
   void processSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
                         std::string_view instrument_name) {
     auto &instrument = EnsureInstrumentExists(instrument_name);
-    std::lock_guard lock{orders_mtx};
-    instrument.handleSellOrder(orders, instrument_name, order_id, price, count,
-                               timestamp);
+    instrument.handleSellOrder(orders, orders_mtx, instrument_name, order_id,
+                               price, count, timestamp);
   }
 };
 
