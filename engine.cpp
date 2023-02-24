@@ -27,7 +27,7 @@ struct Order {
   uint32_t price;
   uint32_t count;
   uint32_t execution_id;
-  std::chrono::microseconds::rep timestamp; // is this the right type?
+  intmax_t timestamp;
 };
 
 auto buy_order_cmp = [](const auto &x, const auto &y) {
@@ -57,7 +57,8 @@ private:
   std::mutex mutex;
 
 public:
-  void handleCancelOrder(auto &&p_orders, uint32_t order_id, auto input_time) {
+  void handleCancelOrder(auto &&p_orders, uint32_t order_id,
+                         std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
     auto it = orders.find(order_id);
@@ -65,15 +66,16 @@ public:
     sell_orders.erase(it->second);
     orders.erase(it);
     p_orders.erase(order_id);
-    Output::OrderDeleted(order_id, true, input_time);
+    Output::OrderDeleted(order_id, true, timestamp);
+    ++timestamp;
   }
 
   void handleBuyOrder(auto &&p_orders, std::string_view instrument,
                       uint32_t order_id, uint32_t price, uint32_t count,
-                      std::chrono::microseconds::rep input_time) {
+                      std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
-    Order buy_order{order_id, price, count, 1, input_time};
+    Order buy_order{order_id, price, count, 1, 0};
 
     while (buy_order.count && !sell_orders.empty()) {
       auto it = sell_orders.begin();
@@ -91,7 +93,8 @@ public:
 
       Output::OrderExecuted(sell_order.order_id, order_id,
                             sell_order.execution_id, sell_order.price,
-                            exec_count, input_time);
+                            exec_count, timestamp);
+      ++timestamp;
       ++sell_order.execution_id;
 
       if (sell_order.count) {
@@ -102,21 +105,23 @@ public:
     }
 
     if (buy_order.count) {
+      buy_order.timestamp = timestamp;
       buy_orders.insert(buy_order);
       orders[buy_order.order_id] = buy_order;
       p_orders[buy_order.order_id] = this;
 
       Output::OrderAdded(order_id, instrument.data(), price, buy_order.count,
-                         false, input_time);
+                         false, timestamp);
+      ++timestamp;
     }
   }
 
   void handleSellOrder(auto &&p_orders, std::string_view instrument,
                        uint32_t order_id, uint32_t price, uint32_t count,
-                       std::chrono::microseconds::rep input_time) {
+                       std::atomic<intmax_t> &timestamp) {
     std::lock_guard lock{mutex};
 
-    Order sell_order{order_id, price, count, 1, input_time};
+    Order sell_order{order_id, price, count, 1, 0};
 
     while (sell_order.count && !buy_orders.empty()) {
       auto it = buy_orders.begin();
@@ -134,7 +139,8 @@ public:
 
       Output::OrderExecuted(buy_order.order_id, order_id,
                             buy_order.execution_id, buy_order.price, exec_count,
-                            input_time);
+                            timestamp);
+      ++timestamp;
       ++buy_order.execution_id;
 
       if (buy_order.count) {
@@ -145,12 +151,14 @@ public:
     }
 
     if (sell_order.count) {
+      sell_order.timestamp = timestamp;
       sell_orders.insert(sell_order);
       orders[sell_order.order_id] = sell_order;
       p_orders[sell_order.order_id] = this;
 
       Output::OrderAdded(order_id, instrument.data(), price, sell_order.count,
-                         true, input_time);
+                         true, timestamp);
+      ++timestamp;
     }
   }
 };
@@ -158,10 +166,12 @@ public:
 struct OrderBook {
   std::unordered_map<std::string, std::unique_ptr<Instrument>> instruments;
   std::unordered_map<uint32_t, Instrument *> orders;
-  std::mutex mutex;
+  std::mutex instrument_mtx;
+  std::mutex orders_mtx;
+  std::atomic<intmax_t> timestamp{0};
 
   Instrument &EnsureInstrumentExists(std::string_view name) {
-    std::lock_guard lock{mutex};
+    std::lock_guard lock{instrument_mtx};
     auto &instrument = instruments[std::string{name}];
     if (!instrument) {
       instrument = std::make_unique<Instrument>();
@@ -170,29 +180,30 @@ struct OrderBook {
   }
 
   void processCancelOrder(uint32_t order_id) {
-    auto input_time = getCurrentTimestamp();
+    std::lock_guard lock{orders_mtx};
     auto it = orders.find(order_id);
     if (it == orders.end()) {
-      Output::OrderDeleted(order_id, false, input_time);
+      Output::OrderDeleted(order_id, false, timestamp);
+      ++timestamp;
       return;
     }
-    it->second->handleCancelOrder(orders, order_id, input_time);
+    it->second->handleCancelOrder(orders, order_id, timestamp);
   }
 
   void processBuyOrder(uint32_t order_id, uint32_t price, uint32_t count,
                        std::string_view instrument_name) {
-    auto input_time = getCurrentTimestamp();
     auto &instrument = EnsureInstrumentExists(instrument_name);
+    std::lock_guard lock{orders_mtx};
     instrument.handleBuyOrder(orders, instrument_name, order_id, price, count,
-                              input_time);
+                              timestamp);
   }
 
   void processSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
                         std::string_view instrument_name) {
-    auto input_time = getCurrentTimestamp();
     auto &instrument = EnsureInstrumentExists(instrument_name);
+    std::lock_guard lock{orders_mtx};
     instrument.handleSellOrder(orders, instrument_name, order_id, price, count,
-                               input_time);
+                               timestamp);
   }
 };
 
@@ -220,15 +231,11 @@ void Engine::connection_thread(ClientConnection connection) {
     // provided in the Output class:
     switch (input.type) {
     case input_cancel: {
-      debug("Got cancel ID:", input.order_id);
-
       order_book.processCancelOrder(input.order_id);
       break;
     }
 
     case input_buy: {
-      debug("Got buy order ID:", input.order_id);
-
       // Remember to take timestamp at the appropriate time, or compute
       // an appropriate timestamp!
       order_book.processBuyOrder(input.order_id, input.price, input.count,
@@ -237,18 +244,12 @@ void Engine::connection_thread(ClientConnection connection) {
     }
 
     case input_sell: {
-      debug("Got sell order ID:", input.order_id);
-
       order_book.processSellOrder(input.order_id, input.price, input.count,
                                   input.instrument);
       break;
     }
 
     default: {
-      SyncCerr{} << "Got order: " << static_cast<char>(input.type) << " "
-                 << input.instrument << " x " << input.count << " @ "
-                 << input.price << " ID: " << input.order_id << std::endl;
-
       // Remember to take timestamp at the appropriate time, or compute
       // an appropriate timestamp!
       auto output_time = getCurrentTimestamp();
