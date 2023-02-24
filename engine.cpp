@@ -73,108 +73,75 @@ public:
     ++timestamp;
   }
 
-  void handleBuyOrder(auto &&p_orders, std::mutex &p_orders_mtx,
-                      std::string_view instrument, uint32_t order_id,
-                      uint32_t price, uint32_t count,
-                      std::atomic<intmax_t> &timestamp) {
+  void handleBuyOrSellOrder(auto &&p_orders, std::mutex &p_orders_mtx,
+                            std::string_view instrument, uint32_t order_id,
+                            uint32_t price, uint32_t count,
+                            std::atomic<intmax_t> &timestamp,
+                            auto &&opp_side_orders, auto &&same_side_orders,
+                            bool is_sell) {
     std::lock_guard lock{mutex};
 
-    Order buy_order{order_id, price, count, 1, 0};
+    Order active_order{order_id, price, count, 1, 0};
 
-    while (buy_order.count && !sell_orders.empty()) {
-      auto it = sell_orders.begin();
-      auto sell_order = *it;
-      if (sell_order.price > price) {
+    while (active_order.count && !opp_side_orders.empty()) {
+      auto it = opp_side_orders.begin();
+      auto matched_order = *it;
+      if ((is_sell && matched_order.price < price) ||
+          (!is_sell && matched_order.price > price)) {
         break;
       }
       orders.erase(it->order_id);
-      sell_orders.erase(it);
+      opp_side_orders.erase(it);
 
-      auto exec_count = std::min(buy_order.count, sell_order.count);
-      buy_order.count -= exec_count;
-      sell_order.count -= exec_count;
+      auto exec_count = std::min(active_order.count, matched_order.count);
+      active_order.count -= exec_count;
+      matched_order.count -= exec_count;
 
-      Output::OrderExecuted(sell_order.order_id, order_id,
-                            sell_order.execution_id, sell_order.price,
+      Output::OrderExecuted(matched_order.order_id, order_id,
+                            matched_order.execution_id, matched_order.price,
                             exec_count, timestamp);
       ++timestamp;
-      ++sell_order.execution_id;
+      ++matched_order.execution_id;
 
-      if (sell_order.count) {
-        sell_orders.insert(sell_order);
-        orders[sell_order.order_id] = sell_order;
+      if (matched_order.count) {
+        opp_side_orders.insert(matched_order);
+        orders[matched_order.order_id] = matched_order;
         {
           std::lock_guard p_lock{p_orders_mtx};
-          p_orders[sell_order.order_id] = this;
+          p_orders[matched_order.order_id] = this;
         }
       }
     }
 
-    if (buy_order.count) {
-      buy_order.timestamp = timestamp;
-      buy_orders.insert(buy_order);
-      orders[buy_order.order_id] = buy_order;
+    if (active_order.count) {
+      active_order.timestamp = timestamp;
+      same_side_orders.insert(active_order);
+      orders[active_order.order_id] = active_order;
       {
         std::lock_guard p_lock{p_orders_mtx};
-        p_orders[buy_order.order_id] = this;
+        p_orders[active_order.order_id] = this;
       }
 
-      Output::OrderAdded(order_id, instrument.data(), price, buy_order.count,
-                         false, timestamp);
+      Output::OrderAdded(order_id, instrument.data(), price, active_order.count,
+                         is_sell, timestamp);
       ++timestamp;
     }
+  }
+
+  void handleBuyOrder(auto &&p_orders, std::mutex &p_orders_mtx,
+                      std::string_view instrument, uint32_t order_id,
+                      uint32_t price, uint32_t count,
+                      std::atomic<intmax_t> &timestamp) {
+    handleBuyOrSellOrder(p_orders, p_orders_mtx, instrument, order_id, price,
+                         count, timestamp, sell_orders, buy_orders, false);
   }
 
   void handleSellOrder(auto &&p_orders, std::mutex &p_orders_mtx,
                        std::string_view instrument, uint32_t order_id,
                        uint32_t price, uint32_t count,
                        std::atomic<intmax_t> &timestamp) {
-    std::lock_guard lock{mutex};
-
-    Order sell_order{order_id, price, count, 1, 0};
-
-    while (sell_order.count && !buy_orders.empty()) {
-      auto it = buy_orders.begin();
-      auto buy_order = *it;
-      if (buy_order.price < price) {
-        break;
-      }
-      orders.erase(it->order_id);
-      buy_orders.erase(it);
-
-      auto exec_count = std::min(buy_order.count, sell_order.count);
-      buy_order.count -= exec_count;
-      sell_order.count -= exec_count;
-
-      Output::OrderExecuted(buy_order.order_id, order_id,
-                            buy_order.execution_id, buy_order.price, exec_count,
-                            timestamp);
-      ++timestamp;
-      ++buy_order.execution_id;
-
-      if (buy_order.count) {
-        buy_orders.insert(buy_order);
-        orders[buy_order.order_id] = buy_order;
-        {
-          std::lock_guard p_lock{p_orders_mtx};
-          p_orders[buy_order.order_id] = this;
-        }
-      }
-    }
-
-    if (sell_order.count) {
-      sell_order.timestamp = timestamp;
-      sell_orders.insert(sell_order);
-      orders[sell_order.order_id] = sell_order;
-      {
-        std::lock_guard p_lock{p_orders_mtx};
-        p_orders[sell_order.order_id] = this;
-      }
-
-      Output::OrderAdded(order_id, instrument.data(), price, sell_order.count,
-                         true, timestamp);
-      ++timestamp;
-    }
+    handleBuyOrSellOrder(p_orders, p_orders_mtx, instrument, order_id, price,
+                         count, timestamp, buy_orders, sell_orders, true);
   }
 };
 
