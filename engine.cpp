@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <cassert>
-#include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -11,6 +11,7 @@
 
 #include "engine.hpp"
 #include "io.hpp"
+#include "order_book.hpp"
 
 void _debug() { SyncCerr{} << '\n'; }
 template <typename Head, typename... Tail> void _debug(Head H, Tail... T) {
@@ -190,7 +191,7 @@ struct OrderBook {
   }
 };
 
-OrderBook order_book;
+OrderBookNew order_book;
 
 void Engine::accept(ClientConnection connection) {
   auto thread =
