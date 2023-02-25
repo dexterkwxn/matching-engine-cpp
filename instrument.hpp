@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <functional>
 #include <iostream>
@@ -93,7 +94,8 @@ struct InstrumentNew {
       order.count -= matched_count;
       opp_order.count -= matched_count;
       Output::OrderExecuted(opp_order.id, order_id, opp_order.execution_id,
-                            opp_order.price, matched_count, timestamp);
+                            opp_order.price, matched_count,
+                            timestamp.fetch_add(1, std::memory_order_relaxed));
       ++opp_order.execution_id;
       ++timestamp;
 
@@ -133,7 +135,7 @@ struct InstrumentNew {
       }
 
       Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
-                         timestamp);
+                         timestamp.fetch_add(1, std::memory_order_relaxed));
       ++timestamp;
     }
   }
@@ -167,7 +169,8 @@ struct InstrumentNew {
         sell_limits.erase(limit_it);
       }
     }
-    Output::OrderDeleted(order_id, true, timestamp);
+    Output::OrderDeleted(order_id, true,
+                         timestamp.fetch_add(1, std::memory_order_relaxed));
     ++timestamp;
   }
 };

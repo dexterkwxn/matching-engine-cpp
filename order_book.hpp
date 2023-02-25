@@ -59,7 +59,8 @@ struct OrderBookNew {
     {
       auto it = orders.find(order_id);
       if (it == orders.end()) {
-        Output::OrderDeleted(order_id, false, timestamp);
+        Output::OrderDeleted(order_id, false,
+                             timestamp.fetch_add(1, std::memory_order_relaxed));
         ++timestamp;
         return;
       }
