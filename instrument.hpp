@@ -83,113 +83,94 @@ struct InstrumentNew {
                             auto &&opp_limits, bool is_sell, auto &&_limits_lk,
                             auto &&_opp_limits_lk) {
     OrderNew order{order_id, price, count, 1};
-    while (order.count) {
-      // Get best limit
+    while (true) {
+      while (order.count) {
+        // Get best limit
+        {
+          // turnstile
+          std::lock_guard insert_lock{insert_lk};
+        }
+        std::lock_guard opp_limits_lk{_opp_limits_lk};
 
-      {
-        // turnstile
-        std::lock_guard insert_lock{insert_lk};
+        auto limit_it = opp_limits.begin();
+        if (limit_it == opp_limits.end()) {
+          // No more opp orders.
+          break;
+        }
+
+        auto &[opp_price, opp_limit] = *limit_it;
+        if ((is_sell && opp_price < price) || (!is_sell && opp_price > price)) {
+          // Opp price does not match.
+          break;
+        }
+
+        // Get the first order in the limit and execute it.
+        auto &opp_order = opp_limit->orders.front();
+        auto matched_count = std::min(order.count, opp_order.count);
+        order.count -= matched_count;
+        opp_order.count -= matched_count;
+        Output::OrderExecuted(opp_order.id, order_id, opp_order.execution_id,
+                              opp_order.price, matched_count,
+                              timestamp.fetch_add(1, std::memory_order_relaxed));
+        ++opp_order.execution_id;
+        ++timestamp;
+
+        // Delete the resting order if it's depleted.
+        if (!opp_order.count) {
+          {
+            std::lock_guard global_orders_lock{global_orders_mtx};
+            global_orders.erase(opp_order.id);
+          }
+
+          if (is_sell) {
+            buy_orders.erase(opp_order.id);
+          } else {
+            sell_orders.erase(opp_order.id);
+          }
+
+          opp_limit->orders.pop_front();
+          if (opp_limit->orders.empty()) {
+            opp_limits.erase(limit_it);
+          }
+        }
       }
-      std::lock_guard opp_limits_lk{_opp_limits_lk};
+      // post matching phase
+      if (!order.count) {
+        return;
+      }
 
-      auto limit_it = opp_limits.begin();
-      if (limit_it == opp_limits.end()) {
-        // No more opp orders.
-        std::lock_guard insert_lock{insert_lk};
-
-
-        std::lock_guard limits_lk{_limits_lk};
-        limit_it = opp_limits.begin();
+      std::lock_guard insert_lock{insert_lk};
+      {
+        std::lock_guard opp_limits_lk{_opp_limits_lk};
+        auto limit_it = opp_limits.begin();
         if (limit_it != opp_limits.end()) {
           auto &[new_opp_price, new_opp_limit] = *limit_it;
-          if ((is_sell && new_opp_price > price) || (!is_sell && new_opp_price < price)) {
+          if ((is_sell && new_opp_price >= price) || (!is_sell && new_opp_price <= price)) {
             continue;
           }
         }
-
-        // double confirm plus chop no matchable orders, time to insert
-        auto &limit = ensureLimitExists(price, is_sell);
-        limit.orders.push_back(order);
-
-        if (is_sell) {
-          sell_orders[order.id] = prev(limit.orders.end());
-        } else {
-          buy_orders[order.id] = prev(limit.orders.end());
-        }
-
-        {
-          std::lock_guard global_orders_lock{global_orders_mtx};
-          global_orders[order.id] = this;
-        }
-
-        Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
-                           timestamp.fetch_add(1, std::memory_order_relaxed));
-        ++timestamp;
-        return;
       }
 
-      auto &[opp_price, opp_limit] = *limit_it;
-      if ((is_sell && opp_price < price) || (!is_sell && opp_price > price)) {
-        // Opp price does not match.
-        std::lock_guard insert_lock{insert_lk};
+      std::lock_guard limits_lk{_limits_lk};
 
-        limit_it = opp_limits.begin();
-        auto &[new_opp_price, new_opp_limit] = *limit_it;
-        if ((is_sell && new_opp_price > price) || (!is_sell && new_opp_price < price)) {
-          continue;
-        }
+      auto &limit = ensureLimitExists(price, is_sell);
+      limit.orders.push_back(order);
 
-        // double confirm plus chop no matchable orders, time to insert
-        std::lock_guard limits_lk{_limits_lk};
-        auto &limit = ensureLimitExists(price, is_sell);
-        limit.orders.push_back(order);
-
-        if (is_sell) {
-          sell_orders[order.id] = prev(limit.orders.end());
-        } else {
-          buy_orders[order.id] = prev(limit.orders.end());
-        }
-
-        {
-          std::lock_guard global_orders_lock{global_orders_mtx};
-          global_orders[order.id] = this;
-        }
-
-        Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
-                           timestamp.fetch_add(1, std::memory_order_relaxed));
-        ++timestamp;
-        return;
+      if (is_sell) {
+        sell_orders[order.id] = prev(limit.orders.end());
+      } else {
+        buy_orders[order.id] = prev(limit.orders.end());
       }
 
-      // Get the first order in the limit and execute it.
-      auto &opp_order = opp_limit->orders.front();
-      auto matched_count = std::min(order.count, opp_order.count);
-      order.count -= matched_count;
-      opp_order.count -= matched_count;
-      Output::OrderExecuted(opp_order.id, order_id, opp_order.execution_id,
-                            opp_order.price, matched_count,
-                            timestamp.fetch_add(1, std::memory_order_relaxed));
-      ++opp_order.execution_id;
+      {
+        std::lock_guard global_orders_lock{global_orders_mtx};
+        global_orders[order.id] = this;
+      }
+
+      Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
+                         timestamp.fetch_add(1, std::memory_order_relaxed));
       ++timestamp;
-
-      // Delete the resting order if it's depleted.
-      if (!opp_order.count) {
-        {
-          std::lock_guard global_orders_lock{global_orders_mtx};
-          global_orders.erase(opp_order.id);
-        }
-
-        if (is_sell) {
-          buy_orders.erase(opp_order.id);
-        } else {
-          sell_orders.erase(opp_order.id);
-        }
-
-        opp_limit->orders.pop_front();
-        if (opp_limit->orders.empty()) {
-          opp_limits.erase(limit_it);
-        }
-      }
+      return;
     }
   }
 
@@ -204,6 +185,7 @@ struct InstrumentNew {
   }
 
   void handleCancelOrder(uint32_t order_id) {
+    std::lock_guard execute_lk{insert_lk};
     {
       std::lock_guard lock{buy_limits_lk};
       auto it = buy_orders.find(order_id);
@@ -218,20 +200,30 @@ struct InstrumentNew {
         Output::OrderDeleted(order_id, true,
                              timestamp.fetch_add(1, std::memory_order_relaxed));
         ++timestamp;
+        global_orders.erase(order_id);
         return;
       } 
     }
-    // else
-    std::lock_guard lock{sell_limits_lk};
-    auto it = sell_orders.find(order_id);
-    auto order_it = it->second;
-    auto limit_it = sell_limits.find(order_it->price);
-    auto &orders = limit_it->second->orders;
-    orders.erase(order_it);
-    if (orders.empty()) {
-      sell_limits.erase(limit_it);
+    {
+      std::lock_guard lock{sell_limits_lk};
+      auto it = sell_orders.find(order_id);
+      if (it != sell_orders.end()) {
+        auto order_it = it->second;
+        auto limit_it = sell_limits.find(order_it->price);
+        auto &orders = limit_it->second->orders;
+        orders.erase(order_it);
+        if (orders.empty()) {
+          sell_limits.erase(limit_it);
+        }
+        Output::OrderDeleted(order_id, true,
+                             timestamp.fetch_add(1, std::memory_order_relaxed));
+        ++timestamp;
+        global_orders.erase(order_id);
+        return;
+      }
     }
-    Output::OrderDeleted(order_id, true,
+    // order that we want to cancel must've been consumed, reject cancel
+    Output::OrderDeleted(order_id, false,
                          timestamp.fetch_add(1, std::memory_order_relaxed));
     ++timestamp;
   }
