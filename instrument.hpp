@@ -26,18 +26,20 @@ struct OrderNew {
 };
 
 struct LimitNew {
+  // FIFO list of orders at this price
   std::list<OrderNew> orders;
-  std::mutex orders_mtx;
 };
 
 struct InstrumentNew {
   // TODO: use a concurrent BST
+
+  // Maps price to the Limit that price
   std::map<uint32_t, std::unique_ptr<LimitNew>, std::greater<uint32_t>>
       buy_limits; // greatest price is at begin()
-  std::mutex buy_limits_mtx;
   std::map<uint32_t, std::unique_ptr<LimitNew>> sell_limits;
-  std::mutex sell_limits_mtx;
 
+  // Maps order_id to iterator
+  // Used for deleting orders directly from their lists.
   std::unordered_map<uint32_t, std::list<OrderNew>::iterator> buy_orders;
   std::unordered_map<uint32_t, std::list<OrderNew>::iterator> sell_orders;
 
@@ -45,8 +47,11 @@ struct InstrumentNew {
 
   std::string name;
 
+  // Global timestamp from OrderBookNew
   std::atomic<intmax_t> &timestamp;
 
+  // Map of order_id to Instrument ptr from OrderBooknew (across all
+  // instruments).
   std::unordered_map<uint32_t, InstrumentNew *> &global_orders;
   std::mutex &global_orders_mtx;
 
@@ -66,8 +71,10 @@ struct InstrumentNew {
 
   void handleBuyOrSellOrder(uint32_t order_id, uint32_t price, uint32_t count,
                             auto &&opp_limits, bool is_sell) {
+    std::lock_guard lock{instrument_mtx};
     OrderNew order{order_id, price, count, 1};
     while (order.count) {
+      // Get best limit
       auto limit_it = opp_limits.begin();
       if (limit_it == opp_limits.end()) {
         // No more opp orders.
@@ -80,6 +87,7 @@ struct InstrumentNew {
         break;
       }
 
+      // Get the first order in the limit and execute it.
       auto &opp_order = opp_limit->orders.front();
       auto matched_count = std::min(order.count, opp_order.count);
       order.count -= matched_count;
@@ -89,16 +97,19 @@ struct InstrumentNew {
       ++opp_order.execution_id;
       ++timestamp;
 
+      // Delete the resting order if it's depleted.
       if (!opp_order.count) {
         {
+          std::lock_guard global_orders_lock{global_orders_mtx};
           global_orders.erase(opp_order.id);
-
-          if (is_sell) {
-            buy_orders.erase(opp_order.id);
-          } else {
-            sell_orders.erase(opp_order.id);
-          }
         }
+
+        if (is_sell) {
+          buy_orders.erase(opp_order.id);
+        } else {
+          sell_orders.erase(opp_order.id);
+        }
+
         opp_limit->orders.pop_front();
         if (opp_limit->orders.empty()) {
           opp_limits.erase(limit_it);
@@ -116,7 +127,10 @@ struct InstrumentNew {
         buy_orders[order.id] = prev(limit.orders.end());
       }
 
-      { global_orders[order.id] = this; }
+      {
+        std::lock_guard global_orders_lock{global_orders_mtx};
+        global_orders[order.id] = this;
+      }
 
       Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
                          timestamp);
@@ -133,6 +147,7 @@ struct InstrumentNew {
   }
 
   void handleCancelOrder(uint32_t order_id) {
+    std::lock_guard lock{instrument_mtx};
     auto it = buy_orders.find(order_id);
     if (it != buy_orders.end()) {
       auto order_it = it->second;
