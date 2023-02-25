@@ -97,6 +97,8 @@ struct InstrumentNew {
         // No more opp orders.
         std::lock_guard insert_lock{insert_lk};
 
+
+        std::lock_guard limits_lk{_limits_lk};
         limit_it = opp_limits.begin();
         if (limit_it != opp_limits.end()) {
           auto &[new_opp_price, new_opp_limit] = *limit_it;
@@ -106,7 +108,6 @@ struct InstrumentNew {
         }
 
         // double confirm plus chop no matchable orders, time to insert
-        std::lock_guard limits_lk{_limits_lk};
         auto &limit = ensureLimitExists(price, is_sell);
         limit.orders.push_back(order);
 
@@ -214,11 +215,11 @@ struct InstrumentNew {
         if (orders.empty()) {
           buy_limits.erase(limit_it);
         }
+        Output::OrderDeleted(order_id, true,
+                             timestamp.fetch_add(1, std::memory_order_relaxed));
+        ++timestamp;
+        return;
       } 
-      Output::OrderDeleted(order_id, true,
-                           timestamp.fetch_add(1, std::memory_order_relaxed));
-      ++timestamp;
-      return;
     }
     // else
     std::lock_guard lock{sell_limits_lk};
