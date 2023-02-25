@@ -48,8 +48,9 @@ struct InstrumentNew {
   std::mutex execute_buy_lk;
   std::mutex execute_sell_lk;
 
-  // lock to insert
-  std::mutex insert_lk;
+  // lock to insert - may not need this actually
+  std::mutex insert_buy_lk;
+  std::mutex insert_sell_lk;
 
   // lock for bst
   std::mutex buy_limits_lk;
@@ -86,59 +87,17 @@ struct InstrumentNew {
     while (order.count) {
       // Get best limit
 
-      {
-        // turnstile
-        std::lock_guard insert_lock{insert_lk};
-      }
       std::lock_guard opp_limits_lk{_opp_limits_lk};
 
       auto limit_it = opp_limits.begin();
       if (limit_it == opp_limits.end()) {
         // No more opp orders.
-        std::lock_guard insert_lock{insert_lk};
-
-        limit_it = opp_limits.begin();
-        if (limit_it != opp_limits.end()) {
-          auto &[new_opp_price, new_opp_limit] = *limit_it;
-          if ((is_sell && new_opp_price > price) || (!is_sell && new_opp_price < price)) {
-            continue;
-          }
-        }
-
-        // double confirm plus chop no matchable orders, time to insert
-        std::lock_guard limits_lk{_limits_lk};
-        auto &limit = ensureLimitExists(price, is_sell);
-        limit.orders.push_back(order);
-
-        if (is_sell) {
-          sell_orders[order.id] = prev(limit.orders.end());
-        } else {
-          buy_orders[order.id] = prev(limit.orders.end());
-        }
-
-        {
-          std::lock_guard global_orders_lock{global_orders_mtx};
-          global_orders[order.id] = this;
-        }
-
-        Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
-                           timestamp.fetch_add(1, std::memory_order_relaxed));
-        ++timestamp;
-        return;
+        break;
       }
 
       auto &[opp_price, opp_limit] = *limit_it;
       if ((is_sell && opp_price < price) || (!is_sell && opp_price > price)) {
         // Opp price does not match.
-        std::lock_guard insert_lock{insert_lk};
-
-        limit_it = opp_limits.begin();
-        auto &[new_opp_price, new_opp_limit] = *limit_it;
-        if ((is_sell && new_opp_price > price) || (!is_sell && new_opp_price < price)) {
-          continue;
-        }
-
-        // double confirm plus chop no matchable orders, time to insert
         std::lock_guard limits_lk{_limits_lk};
         auto &limit = ensureLimitExists(price, is_sell);
         limit.orders.push_back(order);
@@ -189,6 +148,27 @@ struct InstrumentNew {
           opp_limits.erase(limit_it);
         }
       }
+    }
+
+    if (order.count) {
+      std::lock_guard limits_lk{_limits_lk};
+      auto &limit = ensureLimitExists(price, is_sell);
+      limit.orders.push_back(order);
+
+      if (is_sell) {
+        sell_orders[order.id] = prev(limit.orders.end());
+      } else {
+        buy_orders[order.id] = prev(limit.orders.end());
+      }
+
+      {
+        std::lock_guard global_orders_lock{global_orders_mtx};
+        global_orders[order.id] = this;
+      }
+
+      Output::OrderAdded(order_id, name.c_str(), price, order.count, is_sell,
+                         timestamp.fetch_add(1, std::memory_order_relaxed));
+      ++timestamp;
     }
   }
 
